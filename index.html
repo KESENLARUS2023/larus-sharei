@@ -25,7 +25,7 @@
 
 <header class="app-header">
   <h1>謝礼金 取りまとめ</h1>
-  <p class="subtitle">帯同審判・コミッショナー・その他従事者への謝礼金（KESEN LARUS BASKETBALL CLUB 交通費等及び謝礼金支給規程 第5条・第6条 等）</p>
+  <p class="subtitle">帯同審判・コミッショナー・その他従事者への謝礼金（交通費等及び謝礼金支給規程 第5条・第6条 等）</p>
   <button type="button" id="btn-logout" class="logout-btn">ログアウト</button>
 </header>
 
@@ -38,6 +38,14 @@
 <main>
   <!-- ============ 入力タブ ============ -->
   <section id="panel-entry" class="tab-panel active">
+    <div class="edit-banner" id="edit-banner" hidden>
+      <div>
+        <strong>記録を編集中</strong>
+        <span id="edit-banner-text"></span>
+        <div class="edit-banner-note" id="edit-banner-note"></div>
+      </div>
+      <button type="button" class="btn-secondary" id="btn-edit-cancel">編集をやめる</button>
+    </div>
     <form id="entry-form">
       <div class="form-grid form-grid-compact">
         <label class="field-group">
@@ -58,7 +66,7 @@
           試合種別
           <select id="f-gametype">
             <option value="practice_game">練習試合</option>
-            <option value="official_game">公式戦（1試合あたり2,500円）</option>
+            <option value="official_game" data-short="公式戦（2,500円/試合）">公式戦（1試合あたり2,500円）</option>
           </select>
         </label>
 
@@ -73,7 +81,7 @@
         <label class="field-group" id="group-duration">
           拘束時間
           <select id="f-duration">
-            <option value="half">半日（4h以内・1試合）</option>
+            <option value="half" data-short="半日（4h以内）">半日（4h以内・1試合）</option>
             <option value="full">1日（4h超）</option>
           </select>
         </label>
@@ -81,7 +89,7 @@
         <label class="field-group" id="group-out-supply">
           気仙管外の支給方法
           <select id="f-out-supply">
-            <option value="transport">交通費（1,000円）</option>
+            <option value="transport" data-short="交通費 1,000円">交通費（1,000円）</option>
             <option value="bento">弁当</option>
           </select>
         </label>
@@ -114,17 +122,18 @@
       </div>
 
       <div class="form-grid form-grid-compact">
-        <label class="field-group">
-          対象者
-          <select id="f-name-select"></select>
-        </label>
+        <div class="field-group name-field">
+          <span>対象者 <small class="field-hint" id="name-hint">複数選ぶと、同じ内容でまとめて登録できます</small></span>
+          <div class="name-chips" id="f-name-chips" role="group" aria-label="対象者"></div>
+        </div>
         <label class="field-group" id="group-name-other">
           お名前（その他）
           <input type="text" id="f-name-other" placeholder="氏名を入力">
         </label>
-        <label class="field-group">
+        <label class="field-group venue-field">
           大会開催地（任意）
-          <input type="text" id="f-venue" placeholder="例）高田第一中学校">
+          <input type="text" id="f-venue" placeholder="例）高田第一中学校" list="venue-options" autocomplete="off">
+          <datalist id="venue-options"></datalist>
         </label>
       </div>
 
@@ -133,7 +142,7 @@
         <input type="text" id="f-note" placeholder="必要な場合のみ">
       </label>
 
-      <button type="submit" class="btn-primary">登録する</button>
+      <button type="submit" class="btn-primary" id="btn-submit">登録する</button>
     </form>
 
     <details class="contact-settings">
@@ -166,10 +175,11 @@
       <div class="filter-stats">
         <span id="list-count">0 件</span>
         <span>合計 <strong id="list-total">¥0</strong></span>
+        <button type="button" id="btn-list-export" class="btn-secondary btn-small">この一覧をExcel出力</button>
       </div>
     </div>
     <div class="table-wrap">
-      <table class="sheet-table">
+      <table class="sheet-table list-table">
         <thead>
           <tr>
             <th>日付</th><th>氏名</th><th>区分</th><th>内容</th><th>支給額</th><th>備考</th><th></th>
@@ -186,8 +196,8 @@
         <button type="button" id="btn-backup-export" class="btn-secondary">データをExcel出力（バックアップ）</button>
       </div>
       <div class="import-body">
-        <p class="import-hint">出力したファイル（.csvに変換したもの）を読み込んで記録を復元できます。日付・氏名・区分・支給額などの列を持つCSVファイルに対応しています（同じ内容の記録は重複登録されません）。</p>
-        <input type="file" id="import-file" accept=".csv,text/csv">
+        <p class="import-hint">出力したExcelファイル（.xlsx）をそのまま読み込んで記録を復元できます。CSVファイル（UTF-8／Excelで保存したShift_JISのどちらも可）にも対応しています。同じ内容の記録は重複登録されません。</p>
+        <input type="file" id="import-file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
         <div id="import-result" class="import-result"></div>
       </div>
     </details>

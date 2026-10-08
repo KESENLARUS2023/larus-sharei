@@ -380,11 +380,6 @@ main { max-width: 900px; margin: 0 auto; padding: 24px; }
 .row-actions { display: flex; gap: 6px; }
 .row-actions button { padding: 5px 10px; font-size: 0.8rem; border-radius: 6px; }
 #list-tbody .amount-edit { width: 76px; }
-/* タブレット幅では横に並ぶと収まらないため縦に積む（スマホは表ごと横スクロール） */
-@media (min-width: 641px) and (max-width: 1000px) {
-  .row-actions { flex-direction: column; gap: 4px; }
-  .row-actions button { padding: 4px 8px; width: 100%; }
-}
 
 /* ============================================================
  * 謝礼金精算書（印刷・PDF出力用）
@@ -397,7 +392,7 @@ main { max-width: 900px; margin: 0 auto; padding: 24px; }
   /* 非表示にしただけの要素はレイアウト上の高さを保持したままになり、
    * 用紙サイズより本文(body)が長くなって余分な白紙ページが出力されてしまうため、
    * 印刷に関係ない主要コンテナはdisplay:noneでレイアウトごと取り除く */
-  .app-header, .tabs, main, #toast, #chart-tooltip, #login-overlay { display: none !important; }
+  .app-header, .tabs, main, #toast, #chart-tooltip, #login-overlay, #row-menu { display: none !important; }
   .receipt-print-area, .receipt-print-area * { visibility: visible; }
   .receipt-print-area {
     display: block;
@@ -792,3 +787,193 @@ main { max-width: 900px; margin: 0 auto; padding: 24px; }
   padding-top: 10px;
 }
 .chart-tooltip.show { opacity: 1; }
+
+/* ============================================================
+ * 入力フォーム：ボタン選択式（区分・試合種別など）
+ * ============================================================ */
+.segmented {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  background: #eef4f8;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.seg-btn {
+  flex: 1 1 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.86rem;
+  padding: 7px 6px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.seg-btn:hover { color: var(--primary-dark); }
+.seg-btn.active {
+  background: #fff;
+  color: var(--primary-dark);
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(15, 70, 110, 0.18);
+}
+
+/* 対象者（複数選択できるボタン） */
+.name-field { grid-column: 1 / -1; }
+.field-hint { font-size: 0.75rem; color: var(--muted); margin-left: 6px; font-weight: 400; }
+.name-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.name-chip {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text);
+  font-size: 0.9rem;
+  padding: 7px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.name-chip:hover { border-color: var(--primary); }
+.name-chip.active {
+  background: var(--primary-dark);
+  border-color: var(--primary-dark);
+  color: #fff;
+  font-weight: 700;
+}
+.name-chip.active::before { content: '✓ '; }
+
+@media (min-width: 641px) {
+  .venue-field { grid-column: span 2; }
+}
+
+/* 編集中の表示 */
+.edit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: #fff7e6;
+  border: 1px solid #f3c46b;
+  border-radius: 12px;
+  font-size: 0.9rem;
+}
+.edit-banner[hidden] { display: none; }
+.edit-banner strong { margin-right: 10px; color: #8a5300; }
+.edit-banner-note { margin-top: 4px; font-size: 0.8rem; color: #8a5300; }
+.edit-banner-note:empty { display: none; }
+.edit-banner .btn-secondary { align-self: center; flex-shrink: 0; }
+
+/* ============================================================
+ * 一覧：区分の色分け・操作メニュー
+ * ============================================================ */
+.btn-small { padding: 5px 10px; font-size: 0.8rem; }
+.role-tag {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  background: #eef1f4;
+  color: #4b5d6b;
+}
+.role-tag.role-referee { background: #e3eefb; color: #1d5fae; }
+.role-tag.role-commissioner { background: #fdebe2; color: #a8441a; }
+
+.row-menu-btn {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 6px;
+  min-width: 32px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+.row-menu-btn:hover { background: var(--primary-light); color: var(--primary-dark); }
+.row-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-md);
+}
+.row-menu[hidden] { display: none; }
+.row-menu button {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 7px;
+  font-size: 0.9rem;
+  color: var(--text);
+  cursor: pointer;
+}
+.row-menu button:hover { background: var(--primary-light); }
+.row-menu button.danger { color: var(--danger); }
+.row-menu button.danger:hover { background: #fde4ea; }
+
+.list-empty td { text-align: center; color: var(--muted); padding: 28px 12px; }
+
+/* ============================================================
+ * スマホ（幅640px以下）：ヘッダーを詰める
+ * ============================================================ */
+@media (max-width: 640px) {
+  .app-header { padding: 16px; }
+  .app-header h1 { margin: 0; font-size: 1.2rem; }
+  .app-header .subtitle { display: none; }
+  .logout-btn { top: 14px; right: 16px; }
+  .tabs { padding: 10px 12px 0; }
+  .tab-btn { padding: 10px 14px; }
+  main { padding: 16px 12px; }
+  .form-grid { padding: 16px; }
+  .edit-banner { flex-direction: column; align-items: stretch; }
+}
+
+/* ============================================================
+ * スマホ・タブレット（幅860px以下）：一覧は1件1枚のカード表示
+ * ============================================================ */
+@media (max-width: 860px) {
+  .filter-stats { margin-left: 0; width: 100%; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  .table-wrap { overflow: visible; border: none; background: transparent; box-shadow: none; border-radius: 0; }
+  .list-table, .list-table tbody { display: block; }
+  .list-table thead { display: none; }
+  .list-table tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "date role"
+      "name amount"
+      "content content"
+      "note note"
+      "actions actions";
+    gap: 4px 12px;
+    margin-bottom: 10px;
+    padding: 12px 14px;
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-sm);
+  }
+  .list-table tr.list-empty { display: block; }
+  .list-table tbody tr:hover { background: var(--card-bg); }
+  .list-table td { display: block; padding: 0; border: none; white-space: normal; min-width: 0; }
+  .list-table td:empty { display: none; }
+  .list-table .c-date { grid-area: date; color: var(--muted); font-size: 0.8rem; align-self: center; }
+  .list-table .c-role { grid-area: role; justify-self: end; }
+  .list-table .c-name { grid-area: name; font-size: 1.02rem; font-weight: 700; align-self: center; }
+  .list-table .c-amount { grid-area: amount; text-align: right; }
+  .list-table .c-content { grid-area: content; font-size: 0.82rem; }
+  .list-table .c-note { grid-area: note; font-size: 0.8rem; color: var(--muted); }
+  .list-table .c-note::before { content: '備考：'; }
+  .list-table td.c-actions { grid-area: actions; margin-top: 6px; padding: 8px 0 0; border-top: 1px dashed var(--border); }
+  .list-table .row-actions .receipt-btn { flex: 1; padding: 8px; font-size: 0.85rem; }
+  .list-table .row-menu-btn { min-width: 44px; }
+}
