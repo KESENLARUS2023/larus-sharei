@@ -244,5 +244,6 @@ function downloadBytes(bytes, filename, mimeType) {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // すぐに解放するとブラウザによってはファイル名が失われるため、少し待ってから解放する
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

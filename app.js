@@ -29,7 +29,6 @@ const OUT_SUPPLY_LABEL = { transport: '交通費', bento: '弁当' };
 const ROLE_LABELS = { referee: '帯同審判', commissioner: 'コミッショナー', other: 'その他' };
 const LOCATION_LABEL = { in: '気仙管内', out: '気仙管外' };
 const DURATION_LABEL = { half: '半日（4h以内・1試合）', full: '1日（4h超）' };
-const OTHER_VALUE = '__other__';
 
 /* 審判の公式戦・コミッショナーは1試合あたりの金額のため、試合数(最大3)を掛ける */
 function gameCountApplies(role, gametype) {
@@ -109,6 +108,12 @@ function monthKey(dateStr) {
   return (dateStr || '').slice(0, 7); // YYYY-MM
 }
 
+/* 今日の日付（YYYY-MM-DD）。toISOString()は世界標準時のため、日本時間の0時〜9時に前日になってしまう */
+function todayLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -127,28 +132,72 @@ function showToast(msg) {
 /* ============================================================
  * タブ切り替え
  * ============================================================ */
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-panel').forEach((p) => p.classList.toggle('active', p.id === 'panel-' + tab));
+  if (tab === 'list') renderList();
+  if (tab === 'dashboard') renderDashboard();
+}
+
 function initTabs() {
-  const tabs = document.querySelectorAll('.tab-btn');
-  const panels = document.querySelectorAll('.tab-panel');
-  tabs.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      tabs.forEach((b) => b.classList.remove('active'));
-      panels.forEach((p) => p.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
-      if (btn.dataset.tab === 'list') renderList();
-      if (btn.dataset.tab === 'dashboard') renderDashboard();
-    });
+  document.querySelectorAll('.tab-btn').forEach((btn) => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 }
 
 /* ============================================================
  * 入力フォーム
  * ============================================================ */
+/* 選択肢の少ない項目はボタンで選べるようにする。値はこれまでどおり非表示のselectが持ち、
+ * ボタンを押すとselectの値を変えてchangeイベントを発火する（計算・表示切替のロジックはselectのまま） */
+const SEGMENTED_SELECT_IDS = ['f-role', 'f-gametype', 'f-location', 'f-duration', 'f-out-supply', 'f-gamecount'];
+
+function enhanceSelectAsSegments(select) {
+  const group = document.createElement('div');
+  group.className = 'segmented';
+  group.setAttribute('role', 'group');
+  [...select.options].forEach((opt) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'seg-btn';
+    btn.dataset.value = opt.value;
+    btn.textContent = opt.dataset.short || opt.textContent;
+    btn.addEventListener('click', () => {
+      if (select.value === opt.value) return;
+      select.value = opt.value;
+      select.dispatchEvent(new Event('change'));
+    });
+    group.appendChild(btn);
+  });
+  select.hidden = true;
+  select.after(group);
+  select.addEventListener('change', () => syncSegments(select));
+  syncSegments(select);
+}
+
+function syncSegments(select) {
+  const group = select.nextElementSibling;
+  if (!group || !group.classList.contains('segmented')) return;
+  group.querySelectorAll('.seg-btn').forEach((btn) => {
+    const on = btn.dataset.value === select.value;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+}
+
+function syncAllSegments() {
+  SEGMENTED_SELECT_IDS.forEach((id) => syncSegments(document.getElementById(id)));
+}
+
+let selectedNames = []; // 選択中の対象者（よく依頼する人）
+let otherNameSelected = false; // 「その他（自由入力）」を選んでいるか
+let editingId = null; // 編集中の記録のID（新規登録中はnull）
+
 function initForm() {
   const form = document.getElementById('entry-form');
 
-  document.getElementById('f-date').valueAsDate = new Date();
+  document.getElementById('f-date').value = todayLocal();
+  SEGMENTED_SELECT_IDS.forEach((id) => enhanceSelectAsSegments(document.getElementById(id)));
 
   document.getElementById('f-role').addEventListener('change', () => {
     updateConditionalFields();
@@ -165,86 +214,175 @@ function initForm() {
   document.getElementById('f-duration').addEventListener('change', updateUnitAmount);
   document.getElementById('f-gamecount').addEventListener('change', updateUnitAmount);
   document.getElementById('f-out-supply').addEventListener('change', updateUnitAmount);
-  document.getElementById('f-name-select').addEventListener('change', updateNameFieldVisibility);
+  document.getElementById('btn-edit-cancel').addEventListener('click', () => {
+    exitEditMode();
+    switchTab('list');
+  });
 
   updateConditionalFields();
   updateUnitAmount();
-  updateNameFieldVisibility();
+  renderNameChips();
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    const date = document.getElementById('f-date').value;
-    if (!date) {
-      alert('日付を入力してください');
+    const base = readFormRecord();
+    if (!base) return;
+    if (otherNameSelected && !document.getElementById('f-name-other').value.trim()) {
+      alert('お名前を入力してください');
+      return;
+    }
+    const names = selectedTargetNames();
+    if (names.length === 0) {
+      alert('対象者を選択してください');
       return;
     }
 
-    const role = document.getElementById('f-role').value;
-
-    const nameSelectValue = document.getElementById('f-name-select').value;
-    let name;
-    if (nameSelectValue === OTHER_VALUE) {
-      name = document.getElementById('f-name-other').value.trim();
-      if (!name) {
-        alert('お名前を入力してください');
-        return;
-      }
-    } else {
-      name = nameSelectValue;
-      if (!name) {
-        alert('対象者を選択してください');
-        return;
-      }
-    }
-
-    const note = document.getElementById('f-note').value;
-    const venue = document.getElementById('f-venue').value.trim();
-    let record;
-
-    if (role === 'other') {
-      const otherContent = document.getElementById('f-other-content').value.trim();
-      const amount = Number(document.getElementById('f-other-amount').value);
-      if (!otherContent) {
-        alert('内容を入力してください');
-        return;
-      }
-      if (!Number.isFinite(amount) || amount < 0) {
-        alert('支給額を正しく入力してください');
-        return;
-      }
-      record = { date, role, otherContent, amount, name, note, venue };
-    } else {
-      const gametype = role === 'referee' ? document.getElementById('f-gametype').value : undefined;
-      const showLocation = role === 'commissioner' || (role === 'referee' && gametype === 'practice_game');
-      const location = showLocation ? document.getElementById('f-location').value : undefined;
-      const duration = role === 'referee' && gametype === 'practice_game' ? document.getElementById('f-duration').value : undefined;
-      const applyCount = gameCountApplies(role, gametype);
-      const gamecount = applyCount ? Number(document.getElementById('f-gamecount').value) : undefined;
-      const outSupply = showLocation && location === 'out' ? document.getElementById('f-out-supply').value : undefined;
-      const amount = calcAmount(role, { gametype, location, duration, gamecount, outSupply });
-      record = { date, role, gametype, location, duration, gamecount, outSupply, amount, name, note, venue };
-    }
-
-    const submitBtn = form.querySelector('.btn-primary');
+    const submitBtn = document.getElementById('btn-submit');
     submitBtn.disabled = true;
-    window.FirebaseData.addRecord(record)
-      .then(() => {
-        showToast('登録しました');
-        document.getElementById('f-note').value = '';
-        if (role === 'other') {
-          document.getElementById('f-other-content').value = '';
-          document.getElementById('f-other-amount').value = '';
-        }
-        if (nameSelectValue === OTHER_VALUE) document.getElementById('f-name-other').value = '';
-      })
+    const isEdit = editingId !== null;
+    let job;
+    if (isEdit) {
+      job = window.FirebaseData.updateRecord(editingId, toFirestorePatch({ ...base, name: names[0] })).then(() => {
+        showToast('更新しました');
+        exitEditMode();
+        switchTab('list');
+      });
+    } else {
+      const recs = names.map((name) => ({ ...base, name }));
+      const save = recs.length === 1 ? window.FirebaseData.addRecord(recs[0]) : window.FirebaseData.addRecords(recs);
+      job = save.then(() => {
+        showToast(recs.length === 1 ? '登録しました' : `${recs.length}名分を登録しました`);
+        clearFormAfterSave();
+      });
+    }
+    job
       .catch((err) => {
-        console.error('addRecord failed', err);
-        alert('登録に失敗しました: ' + err.message);
+        console.error(isEdit ? 'updateRecord failed' : 'addRecord failed', err);
+        alert((isEdit ? '更新' : '登録') + 'に失敗しました: ' + err.message);
       })
       .finally(() => {
         submitBtn.disabled = false;
       });
   });
+}
+
+/* フォームの入力内容から、対象者以外の記録の中身を作る（明細itemsも登録時点の内容で保存する）。
+ * 入力に不備があればアラートを出してnullを返す */
+function readFormRecord() {
+  const date = document.getElementById('f-date').value;
+  if (!date) {
+    alert('日付を入力してください');
+    return null;
+  }
+  const role = document.getElementById('f-role').value;
+  const note = document.getElementById('f-note').value;
+  const venue = document.getElementById('f-venue').value.trim();
+  let record;
+
+  if (role === 'other') {
+    const otherContent = document.getElementById('f-other-content').value.trim();
+    const amountText = document.getElementById('f-other-amount').value.trim();
+    const amount = Number(amountText);
+    if (!otherContent) {
+      alert('内容を入力してください');
+      return null;
+    }
+    if (amountText === '' || !Number.isInteger(amount) || amount < 0) {
+      alert('支給額を0以上の整数で入力してください');
+      return null;
+    }
+    record = { date, role, otherContent, amount, note, venue };
+  } else {
+    const gametype = role === 'referee' ? document.getElementById('f-gametype').value : undefined;
+    const showLocation = role === 'commissioner' || (role === 'referee' && gametype === 'practice_game');
+    const location = showLocation ? document.getElementById('f-location').value : undefined;
+    const duration = role === 'referee' && gametype === 'practice_game' ? document.getElementById('f-duration').value : undefined;
+    const applyCount = gameCountApplies(role, gametype);
+    const gamecount = applyCount ? Number(document.getElementById('f-gamecount').value) : undefined;
+    const outSupply = showLocation && location === 'out' ? document.getElementById('f-out-supply').value : undefined;
+    const amount = calcAmount(role, { gametype, location, duration, gamecount, outSupply });
+    record = { date, role, gametype, location, duration, gamecount, outSupply, amount, note, venue };
+  }
+  record.items = computeReceiptRows(record);
+  return record;
+}
+
+/* 記録として保存する項目。編集で区分を変えたときに古い項目が残らないよう、使わない項目はnullで上書きする
+ * （updateDocはundefinedを受け付けない） */
+const RECORD_FIELDS = ['date', 'name', 'role', 'gametype', 'location', 'duration', 'gamecount', 'outSupply', 'otherContent', 'amount', 'note', 'venue', 'items'];
+
+function toFirestorePatch(record) {
+  const patch = {};
+  RECORD_FIELDS.forEach((k) => {
+    patch[k] = record[k] === undefined ? null : record[k];
+  });
+  return patch;
+}
+
+function clearFormAfterSave() {
+  document.getElementById('f-note').value = '';
+  document.getElementById('f-other-content').value = '';
+  document.getElementById('f-other-amount').value = '';
+  document.getElementById('f-name-other').value = '';
+  selectedNames = [];
+  otherNameSelected = false;
+  renderNameChips();
+}
+
+function setSelectValue(id, value) {
+  const el = document.getElementById(id);
+  if (value != null && [...el.options].some((o) => o.value === String(value))) el.value = String(value);
+}
+
+/* 一覧の記録を入力フォームに読み込んで編集を始める */
+function startEdit(record) {
+  editingId = record.id;
+  document.getElementById('f-date').value = record.date || todayLocal();
+  setSelectValue('f-role', record.role);
+  setSelectValue('f-gametype', record.gametype);
+  setSelectValue('f-location', record.location);
+  setSelectValue('f-duration', record.duration);
+  setSelectValue('f-gamecount', record.gamecount);
+  setSelectValue('f-out-supply', record.outSupply || 'transport');
+  document.getElementById('f-other-content').value = record.otherContent || '';
+  document.getElementById('f-other-amount').value = record.role === 'other' ? record.amount : '';
+  document.getElementById('f-venue').value = record.venue || '';
+  document.getElementById('f-note').value = record.note || '';
+  if (rosterNames.includes(record.name)) {
+    selectedNames = [record.name];
+    otherNameSelected = false;
+    document.getElementById('f-name-other').value = '';
+  } else {
+    selectedNames = [];
+    otherNameSelected = true;
+    document.getElementById('f-name-other').value = record.name || '';
+  }
+  updateConditionalFields();
+  updateUnitAmount();
+  syncAllSegments();
+  renderNameChips();
+
+  document.getElementById('edit-banner-text').textContent = `${record.date}　${record.name}　${roleLabel(record.role)}`;
+  const calc = record.role === 'other' ? Number(record.amount) : calcAmount(record.role, record);
+  document.getElementById('edit-banner-note').textContent =
+    calc !== Number(record.amount)
+      ? `一覧で修正した支給額（${yen(record.amount)}）は、更新すると入力内容から計算した金額（${yen(calc)}）に置き換わります。`
+      : '';
+  document.getElementById('edit-banner').hidden = false;
+  document.getElementById('name-hint').textContent = '編集中は1人だけ選べます';
+  switchTab('entry');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function exitEditMode() {
+  editingId = null;
+  document.getElementById('edit-banner').hidden = true;
+  document.getElementById('name-hint').textContent = '複数選ぶと、同じ内容でまとめて登録できます';
+  document.getElementById('f-date').value = todayLocal();
+  document.getElementById('f-venue').value = '';
+  clearFormAfterSave();
+  updateConditionalFields();
+  updateUnitAmount();
 }
 
 function updateConditionalFields() {
@@ -283,23 +421,70 @@ function updateUnitAmount() {
   document.getElementById('f-unit-amount-detail').textContent = amountBreakdownText(role, { gametype, location, gamecount, outSupply });
 }
 
+/* 対象者はボタンで選ぶ。新規登録では複数人を選んで同じ内容をまとめて登録できる（編集中は1人だけ） */
+function renderNameChips() {
+  const wrap = document.getElementById('f-name-chips');
+  selectedNames = selectedNames.filter((n) => rosterNames.includes(n));
+  const chip = (attrs, label, on) => `<button type="button" class="name-chip${on ? ' active' : ''}" ${attrs} aria-pressed="${on}">${label}</button>`;
+  wrap.innerHTML =
+    rosterNames.map((n) => chip(`data-name="${escapeHtml(n)}"`, escapeHtml(n), selectedNames.includes(n))).join('') +
+    chip('data-other="1"', 'その他（自由入力）', otherNameSelected);
+  wrap.querySelectorAll('.name-chip').forEach((btn) => btn.addEventListener('click', () => toggleNameChip(btn)));
+  updateNameFieldVisibility();
+  updateSubmitLabel();
+}
+
+function toggleNameChip(btn) {
+  const single = editingId !== null;
+  if (btn.dataset.other) {
+    otherNameSelected = !otherNameSelected;
+    if (single && otherNameSelected) selectedNames = [];
+  } else {
+    const name = btn.dataset.name;
+    if (selectedNames.includes(name)) selectedNames = selectedNames.filter((n) => n !== name);
+    else selectedNames = single ? [name] : [...selectedNames, name];
+    if (single && selectedNames.length > 0) otherNameSelected = false;
+  }
+  renderNameChips();
+  if (btn.dataset.other && otherNameSelected) document.getElementById('f-name-other').focus();
+}
+
 function updateNameFieldVisibility() {
-  const isOther = document.getElementById('f-name-select').value === OTHER_VALUE;
-  document.getElementById('group-name-other').style.display = isOther ? '' : 'none';
+  document.getElementById('group-name-other').style.display = otherNameSelected ? '' : 'none';
+}
+
+function selectedTargetNames() {
+  const names = [...selectedNames];
+  if (otherNameSelected) {
+    const other = document.getElementById('f-name-other').value.trim();
+    if (other) names.push(other);
+  }
+  return [...new Set(names)];
+}
+
+function updateSubmitLabel() {
+  const btn = document.getElementById('btn-submit');
+  if (editingId !== null) {
+    btn.textContent = '更新する';
+    return;
+  }
+  const count = selectedNames.length + (otherNameSelected ? 1 : 0);
+  btn.textContent = count > 1 ? `${count}名分を登録する` : '登録する';
+}
+
+/* 大会開催地は、過去に入力したものを新しい順に候補として出す */
+function renderVenueOptions() {
+  const seen = new Set();
+  const venues = [...records]
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+    .map((r) => (r.venue || '').trim())
+    .filter((v) => v && !seen.has(v) && seen.add(v));
+  document.getElementById('venue-options').innerHTML = venues.map((v) => `<option value="${escapeHtml(v)}"></option>`).join('');
 }
 
 /* ============================================================
  * 対象者ロースター（よく依頼する人を登録・削除。たまにの人はその他で自由入力）
  * ============================================================ */
-function renderNameSelect() {
-  const sel = document.getElementById('f-name-select');
-  const current = sel.value;
-  const options = rosterNames.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
-  sel.innerHTML = options + `<option value="${OTHER_VALUE}">その他（自由入力）</option>`;
-  sel.value = rosterNames.includes(current) || current === OTHER_VALUE ? current : rosterNames[0] || OTHER_VALUE;
-  updateNameFieldVisibility();
-}
-
 function renderRosterList() {
   const ul = document.getElementById('roster-list');
   if (rosterNames.length === 0) {
@@ -357,12 +542,15 @@ function initRoster() {
  * 一覧（スプレッドシート風）
  * ============================================================ */
 let listMonthFilterTouched = false;
+let lastListRecords = []; // 一覧に表示中の記録（Excel出力用）
+let lastListMonth = '';
 
 function renderList() {
+  closeRowMenu();
   let monthFilter = document.getElementById('list-month-filter').value;
   if (!listMonthFilterTouched) {
     const months = [...new Set(records.map((r) => monthKey(r.date)))].sort().reverse();
-    monthFilter = months[0] || monthKey(new Date().toISOString());
+    monthFilter = months[0] || monthKey(todayLocal());
   }
   const nameFilter = document.getElementById('list-name-filter').value.trim();
 
@@ -370,6 +558,8 @@ function renderList() {
     .filter((r) => !monthFilter || monthKey(r.date) === monthFilter)
     .filter((r) => !nameFilter || r.name.includes(nameFilter))
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  lastListRecords = filtered;
+  lastListMonth = monthFilter;
 
   const tbody = document.getElementById('list-tbody');
   tbody.innerHTML = '';
@@ -379,62 +569,159 @@ function renderList() {
     total += Number(r.amount) || 0;
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${escapeHtml(r.date)}</td>
-      <td>${escapeHtml(r.name)}</td>
-      <td>${escapeHtml(roleLabel(r.role))}</td>
-      <td class="wrap">${escapeHtml(describeEntry(r))}</td>
-      <td class="num"><input type="number" class="amount-edit" value="${r.amount}" data-id="${r.id}" step="1"></td>
-      <td class="wrap">${escapeHtml(r.note || '')}</td>
-      <td class="actions">
+      <td class="c-date">${escapeHtml(r.date)}</td>
+      <td class="c-name">${escapeHtml(r.name)}</td>
+      <td class="c-role"><span class="role-tag role-${escapeHtml(r.role)}">${escapeHtml(roleLabel(r.role))}</span></td>
+      <td class="c-content wrap">${escapeHtml(describeEntry(r))}</td>
+      <td class="c-amount num"><input type="number" class="amount-edit" value="${Number(r.amount) || 0}" data-id="${r.id}" step="1" min="0" aria-label="支給額"></td>
+      <td class="c-note wrap">${escapeHtml(r.note || '')}</td>
+      <td class="c-actions actions">
         <div class="row-actions">
-          <button class="btn-secondary receipt-btn" data-receipt="${r.id}">精算書</button>
-          <button class="btn-secondary receipt-btn" data-envelope="${r.id}">封筒</button>
-          <button class="btn-danger" data-del="${r.id}">削除</button>
+          <button type="button" class="btn-secondary receipt-btn" data-receipt="${r.id}">精算書</button>
+          <button type="button" class="btn-secondary receipt-btn" data-envelope="${r.id}">封筒</button>
+          <button type="button" class="row-menu-btn" data-menu="${r.id}" aria-label="その他の操作（編集・削除）" aria-haspopup="menu">…</button>
         </div>
       </td>
     `;
     tbody.appendChild(tr);
   });
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr class="list-empty"><td colspan="7">この条件の記録はありません</td></tr>';
+  }
 
   document.getElementById('list-total').textContent = yen(total);
   document.getElementById('list-count').textContent = filtered.length + ' 件';
 
+  const findRecord = (id) => filtered.find((r) => r.id === id);
   tbody.querySelectorAll('.amount-edit').forEach((input) => {
-    input.addEventListener('change', () => {
-      window.FirebaseData.updateRecord(input.dataset.id, { amount: Number(input.value) || 0 }).catch((err) => {
-        console.error('updateRecord failed', err);
-        alert('更新に失敗しました: ' + err.message);
-      });
-    });
-  });
-  tbody.querySelectorAll('[data-del]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      if (confirm('この記録を削除しますか？')) {
-        window.FirebaseData.deleteRecord(btn.dataset.del).catch((err) => {
-          console.error('deleteRecord failed', err);
-          alert('削除に失敗しました: ' + err.message);
-        });
-      }
-    });
+    input.addEventListener('change', () => handleAmountEdit(input, findRecord(input.dataset.id)));
   });
   tbody.querySelectorAll('[data-receipt]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const record = filtered.find((r) => r.id === btn.dataset.receipt);
+      const record = findRecord(btn.dataset.receipt);
       if (record) handleReceiptClick(record);
     });
   });
   tbody.querySelectorAll('[data-envelope]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      const record = filtered.find((r) => r.id === btn.dataset.envelope);
+      const record = findRecord(btn.dataset.envelope);
       if (record) handleEnvelopeClick(record);
+    });
+  });
+  tbody.querySelectorAll('[data-menu]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const record = findRecord(btn.dataset.menu);
+      if (record) toggleRowMenu(btn, record);
     });
   });
 
   populateMonthOptions(monthFilter);
 }
 
+/* 一覧での支給額の変更は、空欄・マイナス・小数を受け付けず、変更前後の金額を確認してから保存する */
+function handleAmountEdit(input, record) {
+  if (!record) return;
+  const before = Number(record.amount) || 0;
+  const text = input.value.trim();
+  const after = Number(text);
+  if (text === '' || !Number.isInteger(after) || after < 0) {
+    alert('支給額は0以上の整数で入力してください');
+    input.value = before;
+    return;
+  }
+  if (after === before) return;
+  if (!confirm(`${record.date} ${record.name}さんの支給額を\n${yen(before)} → ${yen(after)}\nに変更しますか？`)) {
+    input.value = before;
+    return;
+  }
+  window.FirebaseData.updateRecord(record.id, { amount: after })
+    .then(() => showToast('支給額を変更しました'))
+    .catch((err) => {
+      console.error('updateRecord failed', err);
+      alert('更新に失敗しました: ' + err.message);
+      input.value = before;
+    });
+}
+
+function confirmDeleteRecord(record) {
+  if (!confirm(`${record.date} ${record.name}さん（${roleLabel(record.role)}・${yen(record.amount)}）の記録を削除しますか？\nこの操作は元に戻せません。`)) return;
+  window.FirebaseData.deleteRecord(record.id)
+    .then(() => showToast('削除しました'))
+    .catch((err) => {
+      console.error('deleteRecord failed', err);
+      alert('削除に失敗しました: ' + err.message);
+    });
+}
+
+/* 各行の「…」から開く操作メニュー（編集・削除）。表の横スクロール領域で切れないよう、画面に固定配置する */
+let rowMenuRecord = null;
+
+function toggleRowMenu(btn, record) {
+  const menu = document.getElementById('row-menu');
+  if (!menu.hidden && rowMenuRecord && rowMenuRecord.id === record.id) {
+    closeRowMenu();
+    return;
+  }
+  rowMenuRecord = record;
+  menu.hidden = false;
+  const rect = btn.getBoundingClientRect();
+  const w = menu.offsetWidth;
+  const h = menu.offsetHeight;
+  const top = rect.bottom + 4 + h > window.innerHeight - 8 ? rect.top - h - 4 : rect.bottom + 4;
+  const left = Math.max(8, Math.min(rect.right - w, window.innerWidth - w - 8));
+  menu.style.top = top + 'px';
+  menu.style.left = left + 'px';
+}
+
+function closeRowMenu() {
+  const menu = document.getElementById('row-menu');
+  if (menu) menu.hidden = true;
+  rowMenuRecord = null;
+}
+
+function initRowMenu() {
+  const menu = document.createElement('div');
+  menu.id = 'row-menu';
+  menu.className = 'row-menu';
+  menu.hidden = true;
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML =
+    '<button type="button" role="menuitem" data-action="edit">編集する</button>' +
+    '<button type="button" role="menuitem" data-action="delete" class="danger">削除する</button>';
+  document.body.appendChild(menu);
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-action]');
+    if (!item || !rowMenuRecord) return;
+    const record = rowMenuRecord;
+    closeRowMenu();
+    if (item.dataset.action === 'edit') startEdit(record);
+    else confirmDeleteRecord(record);
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.hidden && !menu.contains(e.target)) closeRowMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeRowMenu();
+  });
+  window.addEventListener('scroll', closeRowMenu, true);
+  window.addEventListener('resize', closeRowMenu);
+}
+
+function handleListExportClick() {
+  if (lastListRecords.length === 0) {
+    alert('出力できる記録がありません');
+    return;
+  }
+  const nameFilter = document.getElementById('list-name-filter').value.trim();
+  const bytes = buildXlsxFile('謝礼金記録', BACKUP_HEADER, buildBackupRows(lastListRecords));
+  const fileName = `謝礼金_${lastListMonth || '全期間'}${nameFilter ? '_' + nameFilter : ''}.xlsx`;
+  downloadBytes(bytes, fileName, XLSX_MIME);
+  showToast('Excelファイルを出力しました');
+}
+
 function populateMonthOptions(current) {
-  const thisMonth = monthKey(new Date().toISOString());
+  const thisMonth = monthKey(todayLocal());
   const months = [...new Set([...records.map((r) => monthKey(r.date)), thisMonth].filter(Boolean))].sort().reverse();
   const sel = document.getElementById('list-month-filter');
   const keep = current || sel.value;
@@ -448,6 +735,8 @@ function initList() {
     renderList();
   });
   document.getElementById('list-name-filter').addEventListener('input', renderList);
+  document.getElementById('btn-list-export').addEventListener('click', handleListExportClick);
+  initRowMenu();
 }
 
 /* ============================================================
@@ -535,7 +824,8 @@ function outSupplyRow(r) {
   return { label: '交通費（気仙管外）', amount: OUT_SUPPLEMENT };
 }
 
-function buildReceiptRows(r) {
+/* 規程のルールから明細を組み立てる（登録時に記録へ保存する。保存がない古い記録の精算書でも使う） */
+function computeReceiptRows(r) {
   if (r.role === 'referee') {
     if (r.gametype === 'practice_game') {
       const base = RULES.referee.gametype.practice_game.base[r.duration] ?? 0;
@@ -580,13 +870,25 @@ const RECEIPT_WAVE_SVG = `
     <path d="M0 408.6 C49.1 403.7 98.3 403.7 147.4 408.6 C196.5 413.6 246.6 413.6 297.6 408.6 C348.7 403.7 398.7 403.7 447.9 408.6 C497 413.6 546.1 413.6 595.3 408.6" fill="none" stroke="#999" stroke-width="0.8"/>
   </svg>`;
 
+/* 精算書の明細。金額は必ず記録の支給額（一覧の金額）に合わせる。
+ * 登録時に保存した明細を優先し、明細の合計が支給額と合わない場合（一覧で金額を修正した記録など）は
+ * 支給額を1行で表示する（後から規程の金額を変えても、過去の精算書の金額は変わらない） */
+function receiptRowsFor(r) {
+  const amount = Number(r.amount) || 0;
+  const rows = Array.isArray(r.items) && r.items.length > 0 ? r.items : computeReceiptRows(r);
+  const sum = rows.reduce((s, row) => s + (Number(row.amount) || 0), 0);
+  if (sum === amount) return rows;
+  const label = r.role === 'other' ? r.otherContent || '謝礼' : `${eventLabel(r).item || roleLabel(r.role)} 謝礼`;
+  return [{ label, amount }];
+}
+
 function renderReceiptPrintArea(recordsToPrint) {
   document.getElementById('envelope-print-area').innerHTML = '';
   const area = document.getElementById('receipt-print-area');
   area.innerHTML = recordsToPrint
     .map((r) => {
-      const rows = buildReceiptRows(r);
-      const total = rows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+      const rows = receiptRowsFor(r);
+      const total = Number(r.amount) || 0;
       const phone = contactsCache.phones[r.name] || '';
       const address = contactsCache.addresses[r.name] || '';
       const event = eventLabel(r);
@@ -677,8 +979,11 @@ const LOCATION_LABEL_REVERSE = { 気仙管内: 'in', 気仙管外: 'out' };
 const OUT_SUPPLY_LABEL_REVERSE = { 交通費: 'transport', 弁当: 'bento' };
 const GAMETYPE_LABEL_REVERSE = { 練習試合: 'practice_game', 公式戦: 'official_game' };
 
-function buildBackupRows() {
-  return records.map((r) => [
+const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+function buildBackupRows(list = records) {
+  const sorted = [...list].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return sorted.map((r) => [
     r.date,
     r.name,
     roleLabel(r.role),
@@ -701,40 +1006,148 @@ function handleBackupExportClick() {
   }
   const rows = buildBackupRows();
   const bytes = buildXlsxFile('謝礼金記録', BACKUP_HEADER, rows);
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  downloadBytes(bytes, `謝礼金_バックアップ_${today}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  const today = todayLocal().replace(/-/g, '');
+  downloadBytes(bytes, `謝礼金_バックアップ_${today}.xlsx`, XLSX_MIME);
   showToast('バックアップを出力しました');
 }
 
+/* CSVを行・セルの2次元配列にする。""で囲まれたセル内のカンマ・改行・""にも対応する */
 function parseCsv(text) {
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter((l) => l.length > 0);
-  return lines.map((line) => {
-    const cells = [];
-    let cur = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (inQuotes) {
-        if (ch === '"' && line[i + 1] === '"') {
-          cur += '"';
-          i++;
-        } else if (ch === '"') {
-          inQuotes = false;
-        } else {
-          cur += ch;
-        }
+  const rows = [];
+  let row = [];
+  let cur = '';
+  let inQuotes = false;
+  const src = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inQuotes) {
+      if (ch === '"' && src[i + 1] === '"') {
+        cur += '"';
+        i++;
       } else if (ch === '"') {
-        inQuotes = true;
-      } else if (ch === ',') {
-        cells.push(cur);
-        cur = '';
+        inQuotes = false;
       } else {
         cur += ch;
       }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      row.push(cur);
+      cur = '';
+    } else if (ch === '\n') {
+      row.push(cur);
+      cur = '';
+      if (row.some((c) => c !== '')) rows.push(row);
+      row = [];
+    } else {
+      cur += ch;
     }
-    cells.push(cur);
-    return cells;
-  });
+  }
+  row.push(cur);
+  if (row.some((c) => c !== '')) rows.push(row);
+  return rows;
+}
+
+/* CSVの文字コードを判定して読む。UTF-8として正しく読めなければ、日本語版ExcelのCSV保存形式(Shift_JIS)として読む */
+function decodeCsvBytes(buffer) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch (e) {
+    return new TextDecoder('shift_jis').decode(buffer);
+  }
+}
+
+/* .xlsxファイル（zip）から最初のシートを行・セルの2次元配列で読み出す。外部ライブラリは使わず、
+ * zipの展開はブラウザ標準のDecompressionStreamで行う */
+async function readXlsxRows(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new Error('Excelファイル（.xlsx）として読み込めませんでした');
+  const entryCount = view.getUint16(eocd + 10, true);
+  let p = view.getUint32(eocd + 16, true);
+  const entries = {};
+  const utf8 = new TextDecoder('utf-8');
+  for (let n = 0; n < entryCount; n++) {
+    const nameLen = view.getUint16(p + 28, true);
+    entries[utf8.decode(bytes.subarray(p + 46, p + 46 + nameLen))] = {
+      method: view.getUint16(p + 10, true),
+      size: view.getUint32(p + 20, true),
+      offset: view.getUint32(p + 42, true),
+    };
+    p += 46 + nameLen + view.getUint16(p + 30, true) + view.getUint16(p + 32, true);
+  }
+  const readEntry = async (name) => {
+    const e = entries[name];
+    if (!e) return null;
+    const start = e.offset + 30 + view.getUint16(e.offset + 26, true) + view.getUint16(e.offset + 28, true);
+    const data = bytes.subarray(start, start + e.size);
+    if (e.method === 0) return utf8.decode(data);
+    const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return utf8.decode(await new Response(stream).arrayBuffer());
+  };
+  const parseXml = (text) => new DOMParser().parseFromString(text, 'application/xml');
+  // ふりがな(rPh)は除いて、セルの文字だけをつなげる
+  const textOf = (node) =>
+    [...node.getElementsByTagName('t')].filter((t) => !t.parentNode || t.parentNode.nodeName !== 'rPh').map((t) => t.textContent).join('');
+
+  let sheetPath = 'xl/worksheets/sheet1.xml';
+  const workbook = await readEntry('xl/workbook.xml');
+  const rels = await readEntry('xl/_rels/workbook.xml.rels');
+  if (workbook && rels) {
+    const firstSheet = parseXml(workbook).getElementsByTagName('sheet')[0];
+    const rid = firstSheet && firstSheet.getAttribute('r:id');
+    const rel = [...parseXml(rels).getElementsByTagName('Relationship')].find((r) => r.getAttribute('Id') === rid);
+    if (rel) {
+      const target = rel.getAttribute('Target');
+      sheetPath = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
+    }
+  }
+  const sharedXml = await readEntry('xl/sharedStrings.xml');
+  const shared = sharedXml ? [...parseXml(sharedXml).getElementsByTagName('si')].map(textOf) : [];
+  const sheetXml = await readEntry(sheetPath);
+  if (!sheetXml) throw new Error('Excelファイルにシートが見つかりませんでした');
+
+  const colIndex = (ref) => {
+    const letters = (ref || '').replace(/[0-9]/g, '');
+    let n = 0;
+    for (const ch of letters) n = n * 26 + (ch.charCodeAt(0) - 64);
+    return n - 1;
+  };
+  return [...parseXml(sheetXml).getElementsByTagName('row')]
+    .map((rowEl) => {
+      const cells = [];
+      [...rowEl.getElementsByTagName('c')].forEach((c, i) => {
+        const idx = c.getAttribute('r') ? colIndex(c.getAttribute('r')) : i;
+        const type = c.getAttribute('t');
+        const v = c.getElementsByTagName('v')[0];
+        let value = '';
+        if (type === 's') value = shared[Number(v && v.textContent)] ?? '';
+        else if (type === 'inlineStr') value = textOf(c);
+        else value = v ? v.textContent : '';
+        cells[idx] = value;
+      });
+      return Array.from(cells, (x) => x ?? '');
+    })
+    .filter((cells) => cells.some((x) => String(x).trim() !== ''));
+}
+
+/* 日付を「YYYY-MM-DD」にそろえる。Excelで開き直したファイルの「2026/9/25」や日付シリアル値にも対応する */
+function normalizeImportDate(value) {
+  const v = String(value || '').trim();
+  let m = v.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  if (/^\d{5}(\.\d+)?$/.test(v)) {
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(Number(v)) * 86400000);
+    return d.toISOString().slice(0, 10);
+  }
+  return v;
 }
 
 /* CSVの1行(cells)を、バックアップ形式のヘッダー(header)を手がかりに記録オブジェクトへ変換する。
@@ -746,7 +1159,7 @@ function parseBackupRow(cells, header) {
     return i === -1 ? '' : (cells[i] ?? '').trim();
   };
 
-  const date = get('日付');
+  const date = normalizeImportDate(get('日付'));
   const name = get('氏名');
   const role = ROLE_LABEL_REVERSE[get('区分')];
   const amount = Number(get('支給額'));
@@ -788,66 +1201,80 @@ function parseBackupRow(cells, header) {
   return record;
 }
 
-function handleImportCsv(text) {
+const sameValue = (a, b) => (a ?? null) === (b ?? null);
+const isSameRecord = (a, b) =>
+  a.date === b.date &&
+  a.name === b.name &&
+  a.role === b.role &&
+  sameValue(a.gametype, b.gametype) &&
+  sameValue(a.location, b.location) &&
+  sameValue(a.duration, b.duration) &&
+  sameValue(a.gamecount, b.gamecount) &&
+  sameValue(a.outSupply, b.outSupply) &&
+  sameValue(a.otherContent, b.otherContent) &&
+  Number(a.amount) === Number(b.amount);
+
+async function handleImportRows(rows) {
   const resultEl = document.getElementById('import-result');
-  const rows = parseCsv(text);
   if (rows.length === 0) {
     resultEl.textContent = 'ファイルが空です';
     return;
   }
-  const header = rows[0].map((h) => h.trim());
+  const header = rows[0].map((h) => String(h).trim());
   if (!header.includes('日付') || !header.includes('氏名') || !header.includes('区分') || !header.includes('支給額')) {
-    resultEl.textContent = 'CSVの形式が正しくありません（日付・氏名・区分・支給額の列が必要です）';
+    resultEl.textContent = 'ファイルの形式が正しくありません（日付・氏名・区分・支給額の列が必要です）';
     return;
   }
 
-  let added = 0;
   let duplicated = 0;
   let invalid = 0;
   const toAdd = [];
 
   rows.slice(1).forEach((cells) => {
     if (cells.length < 2) return;
-    const record = parseBackupRow(cells, header);
+    const record = parseBackupRow(cells.map((c) => String(c ?? '')), header);
     if (!record) {
       invalid++;
       return;
     }
-
-    const isDuplicate = records.some(
-      (r) =>
-        r.date === record.date &&
-        r.name === record.name &&
-        r.role === record.role &&
-        r.gametype === record.gametype &&
-        r.location === record.location &&
-        r.duration === record.duration &&
-        r.gamecount === record.gamecount &&
-        r.outSupply === record.outSupply &&
-        r.otherContent === record.otherContent &&
-        Number(r.amount) === record.amount
-    );
-    if (isDuplicate) {
+    if (records.some((r) => isSameRecord(r, record)) || toAdd.some((r) => isSameRecord(r, record))) {
       duplicated++;
       return;
     }
-
     toAdd.push(record);
-    added++;
   });
 
-  if (toAdd.length > 0) {
-    window.FirebaseData.addRecords(toAdd).catch((err) => {
-      console.error('addRecords failed', err);
-      alert('取込に失敗しました: ' + err.message);
-    });
-  }
+  const skipped = [];
+  if (duplicated > 0) skipped.push(`重複のためスキップ: ${duplicated}件`);
+  if (invalid > 0) skipped.push(`形式不正のためスキップ: ${invalid}件`);
+  const skippedText = skipped.length ? `（${skipped.join('、')}）` : '';
 
-  const resultLines = [`${added}件を追加しました`];
-  if (duplicated > 0) resultLines.push(`（重複のためスキップ: ${duplicated}件）`);
-  if (invalid > 0) resultLines.push(`（形式不正のためスキップ: ${invalid}件）`);
-  resultEl.textContent = resultLines.join(' ');
-  if (added > 0) showToast(`${added}件をインポートしました`);
+  if (toAdd.length === 0) {
+    resultEl.textContent = `追加する記録はありませんでした${skippedText}`;
+    return;
+  }
+  resultEl.textContent = '取り込み中...';
+  try {
+    await window.FirebaseData.addRecords(toAdd);
+    resultEl.textContent = `${toAdd.length}件を追加しました${skippedText}`;
+    showToast(`${toAdd.length}件を取り込みました`);
+  } catch (err) {
+    console.error('addRecords failed', err);
+    resultEl.textContent = '取込に失敗しました: ' + err.message;
+  }
+}
+
+async function handleImportFile(file) {
+  const resultEl = document.getElementById('import-result');
+  try {
+    const buffer = await file.arrayBuffer();
+    const isXlsx = /\.xlsx$/i.test(file.name) || new Uint8Array(buffer.slice(0, 2)).join() === '80,75'; // "PK"
+    const rows = isXlsx ? await readXlsxRows(buffer) : parseCsv(decodeCsvBytes(buffer));
+    await handleImportRows(rows);
+  } catch (err) {
+    console.error('import failed', err);
+    resultEl.textContent = 'ファイルを読み込めませんでした: ' + err.message;
+  }
 }
 
 function initBackup() {
@@ -855,9 +1282,7 @@ function initBackup() {
   document.getElementById('import-file').addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => handleImportCsv(String(reader.result));
-    reader.readAsText(file, 'utf-8');
+    handleImportFile(file);
     e.target.value = '';
   });
 }
@@ -970,7 +1395,7 @@ function fiscalYearLabel(fy) {
 
 function getFiscalYearsWithData() {
   const years = new Set(records.map((r) => fiscalYearOf(r.date)));
-  years.add(fiscalYearOf(new Date().toISOString().slice(0, 10)));
+  years.add(fiscalYearOf(todayLocal()));
   return [...years].sort((a, b) => b - a);
 }
 
@@ -1013,7 +1438,7 @@ function initDashboard() {
 function renderDashboard() {
   const yearSel = document.getElementById('dash-year');
   const years = getFiscalYearsWithData();
-  const keep = yearSel.value ? Number(yearSel.value) : fiscalYearOf(new Date().toISOString().slice(0, 10));
+  const keep = yearSel.value ? Number(yearSel.value) : fiscalYearOf(todayLocal());
   yearSel.innerHTML = years.map((y) => `<option value="${y}">${escapeHtml(fiscalYearLabel(y))}</option>`).join('');
   yearSel.value = years.includes(keep) ? keep : years[0];
 
@@ -1195,12 +1620,13 @@ function initAuth() {
           records = recs;
           renderList();
           renderDashboard();
+          renderVenueOptions();
         });
       }
       if (!unsubscribeRoster) {
         unsubscribeRoster = window.FirebaseData.subscribeRoster((names) => {
           rosterNames = names;
-          renderNameSelect();
+          renderNameChips();
           renderRosterList();
           renderContactSettingsBody();
         });
